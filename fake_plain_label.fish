@@ -15,8 +15,6 @@ function make_fake -a title
 
     touch $filename.pdf
     echo $filename.pdf
-    touch $filename.txt
-    echo $filename.txt
 end
 
 
