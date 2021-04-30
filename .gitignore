@@ -2,3 +2,4 @@ counter.txt
 __pycache__/
 inventory.txt
 spool/
+lost-inventory.txt

@@ -1,20 +1,28 @@
 #!/usr/bin/python3
 
 import io
+import os.path
+import subprocess
 import sys
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 from labelwindow import Ui_LabelerWindow
 
+import inventory
 import labelpreview
 
 
 class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
     _placeholder_style = "color: gray; font-style: italic"
 
-    def __init__(self, parent=None):
+    def __init__(self, creators, inventory_file, printer, parent=None):
         super(LabelerWindow, self).__init__(parent)
+
+        self.inventory = inventory.Inventory(inventory_file)
+        self.creators = creators
+        self.printer = printer
+
         self.setupUi(self)
 
         self.leCategory.textChanged.connect(self.leCategory_changed)
@@ -128,6 +136,8 @@ class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
         num_labels = self.sbLabels.value()
         num_stickers = num_labels // per_sticker
 
+        self.num_stickers = num_stickers
+
         label = 'label' if (num_labels == 1) else 'labels'
         sticker = 'sticker' if (num_stickers == 1) else 'stickers'
 
@@ -204,15 +214,18 @@ class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
 
     @QtCore.pyqtSlot()
     def print(self):
+        self.update_copies()
+        copies = self.num_stickers
+
         if self.is_inventory():
-            return self.print_inventory()
+            return self.print_inventory(copies)
         elif self.is_plain():
-            return self.print_plain()
+            return self.print_plain(copies)
 
         self.message('Tell Daniel that BANANA BANANA CHEESECAKE')
 
 
-    def print_inventory(self):
+    def print_inventory(self, copies):
         category = self.leCategory.text().strip()
         title = self.leTitle.text().strip()
         subtitle = self.leSubtitle.text().strip()
@@ -225,24 +238,136 @@ class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
             self.message('Title must not be blank!')
             return False
 
-        text = 'Printing {category} / {title} / {subtitle}...'.format(
+        text = 'Preparing {category} / {title} / {subtitle}...'.format(
                 category=category,
                 title=title,
                 subtitle=subtitle,
                 )
         self.message(text)
 
-        return True
+
+        creator = self.creators['inventory']
+        args = [creator, category, title, subtitle, description]
+
+        result = subprocess.run(
+                args,
+                stdout=subprocess.PIPE,
+                timeout=60,
+                )
+
+        if result.returncode != 0:
+            text = 'Error preparing sticker!!! {:}'.format(result.returncode)
+            self.message(text, timeout=10000)
+            return False
+
+        print_filename = None
+
+        for line in result.stdout.split(b'\n'):
+            if not line:
+                continue
+
+            if os.path.isfile(line):
+                for ext in (b'.txt', b'.dat', b'.json'):
+                    if line.lower().endswith(ext):
+                        success = False
+                        for attempt in range(10):
+                            try:
+                                self.inventory.append(str(line, 'utf-8'))
+                                success = True
+                            except BlockingIOError:
+                                text = 'Waiting for inventory... {:}'.format(
+                                        attempt,
+                                        )
+                                self.message(text)
+
+                                wait_loop = QtCore.QEventLoop()
+                                QtCore.QTimer.singleShot(200, wait_loop.quit)
+                                wait_loop.exec_()
+
+                        if not success:
+                            with open('lost-inventory.txt', 'a') as F:
+                                print(str(line, 'utf-8'), file=F)
+                            text = ' '.join((
+                                'Could not queue',
+                                title,
+                                'for inventory!',
+                                ))
+                            self.message(text, timeout=10000)
+                            return False
+
+                        break
+                if line.lower().endswith(b'.pdf'):
+                    print_filename = line
+
+        return self.print_copies(print_filename, copies, title=title)
 
 
-    def print_plain(self):
+    def print_plain(self, copies):
         plain = self.lePlainText.text().strip()
 
         if not plain:
             self.message('Label must not be blank!')
             return False
 
-        text = 'Printing {plain}...'.format(plain=plain)
+        text = 'Preparing {plain}...'.format(plain=plain)
+        self.message(text)
+
+
+        creator = self.creators['plain']
+        args = [creator, plain]
+
+        result = subprocess.run(
+                args,
+                stdout=subprocess.PIPE,
+                timeout=60,
+                )
+
+        if result.returncode != 0:
+            text = 'Error preparing sticker!!! {:}'.format(result.returncode)
+            self.message(text, timeout=10000)
+            return False
+
+        print_filename = result.stdout.strip(b'\n')
+
+        if not os.path.isfile(print_filename):
+            text = ''.join((
+                'Could not determine output filename from ',
+                creator,
+                '!',
+                ))
+            self.message(text, timeout=10000)
+            return False
+
+        return self.print_copies(print_filename, copies, title=plain)
+
+
+    def print_copies(self, filename, copies, title=None):
+        for copy in range(1, copies + 1):
+            text = 'Printing # {copy} of {copies}...'.format(
+                    copy=copy,
+                    copies=copies,
+                    )
+            self.message(text)
+
+            args = ['echo', 'lp', '-d', self.printer, filename]
+
+            result = subprocess.run(args, timeout=10)
+
+            if result.returncode != 0:
+                text = 'Error printing copy # {:}!!! {:}'.format(
+                        copy,
+                        result.returncode,
+                        )
+                self.message(text, timeout=10000)
+                return False
+
+        copy = 'copy' if copies == 1 else 'copies'
+        text = 'Queued {copies} {copy}'.format(
+                copies=copies,
+                copy=copy,
+                )
+        if title:
+            text += ' of ' + title
         self.message(text)
 
         return True
@@ -265,7 +390,19 @@ class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
 
 
 if __name__ == '__main__':
-    app = QtWidgets.QApplication(sys.argv)
+    (
+            inventory_label_creator,
+            plain_label_creator,
+            inventory_file,
+            printer,
+            ) = sys.argv[-4:]
+
+    creators = dict(
+            inventory=inventory_label_creator,
+            plain=plain_label_creator,
+            )
+
+    app = QtWidgets.QApplication(sys.argv[:-3])
     app.setAttribute(
             Qt.AA_UseStyleSheetPropagationInWidgetStyles,
             True
@@ -276,7 +413,7 @@ if __name__ == '__main__':
         font-family: "Sans";
         }
     """)
-    win = LabelerWindow()
+    win = LabelerWindow(creators, inventory_file, printer)
     win.show()
     app.aboutToQuit.connect(win.timPreview.stop)
     sys.exit(app.exec_())
