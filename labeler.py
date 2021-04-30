@@ -25,6 +25,8 @@ class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
 
         self.setupUi(self)
 
+        self.tabs.currentChanged.connect(self.tab_changed)
+
         self.leCategory.textChanged.connect(self.leCategory_changed)
         self.leTitle.textChanged.connect(self.leTitle_changed)
         self.leSubtitle.textChanged.connect(self.leSubtitle_changed)
@@ -383,6 +385,11 @@ class LabelerWindow(QtWidgets.QMainWindow, Ui_LabelerWindow):
         self.lePlainText.setText('')
         self.pbNormalSingle.setChecked(True)
         self.sbLabels.setValue(1)
+
+
+    @QtCore.pyqtSlot(int)
+    def tab_changed(self, index):
+        self.update_preview()
 
 
     def message(self, content, timeout=5000):
